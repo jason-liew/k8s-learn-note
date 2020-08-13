@@ -1,0 +1,33 @@
+dynamic client rest传参数obj 类型和拿到结果的类型都是 "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+流程都是 参数编码，rest请求，结果解码。
+discovery 只有查询，查询当前apiserver 支持的所有resource,包括所有的group,version,resource 组合.没用informer,lister.但有cache(memory版，disk版),这个cache特殊不是client-go/tools/cache.
+是第三方库httpcache.
+informer,lister,kubernetes 目录下都是自动生成的，分别是informer-gen,lister-gen,client-gen
+metadata 代码结构和 dynamic client 一样，相当于复制一份改了变量名字。主要区别是http 请求传的参数不同。
+
+需要k8s.io/apimachinery/ 这里的前置知识。
+
+pkg/apis/ 只注册一个  client.authentication.k8s.io
+plugin/exec 这里有个sometimes 限制一段时间某个函数最多执行多少次，connrotatition 不明就里，像是更新https cert是关掉旧链接？
+
+var _ xxxType = &xxxType{} 这种用意何在？
+workqueue 三个任务篮子,queue []t, dirty map, processing map . queue 用于存work顺序，其余2用于存work，shutingdown 标记整个queue状态，不接活了。
+主要method, Add，Get，Done，Shutdown。
+Add 时一般同时加到 queue,dirty 里面,但是 processing 里已有这个任务，就不加到queue了，只加dirty。
+Get 从queue,dirty 里拿一个任务出来。
+Done 标记任务完成，从processing 里删掉这个任务，然是如果这个任务在dirty里还有，就在加到 queue 里。和上面Add里的特殊情况相呼应。
+总之：
+  Add 写 queue,dirty, Get 读 queue，dirty。特殊情况时Add 只写dirty不写queue，留到后面Done 时在加。
+  考虑一种情况，失败重试，Get拿出来执行任务失败了又Add了此时只写了dirty，然后Done，又写了queue。估计是为了保证顺序，两次执行不重叠，确保上一次执行完了，在来下一次。
+  只要queue加了东西都 cond.signal(), shutdown()时cond.BroadCast(), Get时若queue空了就 cond.Wait()
+
+delaying queue "container/heap"
+
+4个数据篮子在workqueue基础上又加了3个篮子，waitForPriorityQueue,waitingEntryByData,waitingForAddCh(chan [1000]）,q.Interface(即上文中的workqueue)
+调用方 往waitingForAddCh 里放数据，经过一波中转，最后流到 workqueue里.
+中转就是 waitForPriorityQueue和waitingEntryByData，有一for{select:case} 组合不断从waitingForAddCh里拿数据放一份到waitForPriorityQueue里，在放同样一份在waitingEntryByData
+这两份一摸一样。waitingEntryByData 这一份用来去重的，重复添加时只改时间调整waitForPriorityQueue里顺序。
+waitForPriorityQueue 是一个数组，[]*waitFor,实现了container/heap里的5个方法即成为了heap，每个元素除了数据还包括readyat时间,index（heap 里的index）.
+这优先级队列实际是最小堆，每次拿readyat最早的。删掉最顶的数据后最后一个补位下沉，加数据是加在最后然后上浮。除了像普通queue一样尾进头出，在每次进出时调整内部顺序。
+
+
